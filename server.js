@@ -539,25 +539,30 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       if (interaction.commandName === 'comprar') {
-        const productId = interaction.options.getInteger('produto');
-        const r = await pool.query('SELECT * FROM products WHERE id=$1 AND active=TRUE LIMIT 1', [productId]);
-        if (!r.rowCount) return interaction.reply({ content: 'Produto não encontrado.', ephemeral: true });
-        const p = r.rows[0];
         await interaction.deferReply({ ephemeral: true });
-        const charge = await createRevantPixOrder({
-          discordUserId: interaction.user.id,
-          customerName: interaction.user.globalName || interaction.user.username,
-          amount: Number(p.price),
-          days: OFFER_DAYS,
-          productId: p.id,
-          productName: p.name
-        });
-        const pix = charge.pix || {};
-        const embed = new EmbedBuilder()
-          .setTitle('💳 Pagamento PIX')
-          .setDescription(`**Produto:** ${p.name}\n**Valor:** R$ ${Number(p.price).toFixed(2)}\n\n**Copia e cola:**\n\`\`\`${pix.qr_code || 'QR Code não retornado'}\`\`\`\n\nApós a confirmação, sua licença será enviada por DM.`)
-          .setColor(0x2ECC71);
-        return interaction.editReply({ embeds: [embed] });
+        try {
+          const productId = interaction.options.getInteger('produto');
+          const r = await pool.query('SELECT * FROM products WHERE id=$1 AND active=TRUE LIMIT 1', [productId]);
+          if (!r.rowCount) return interaction.editReply({ content: '❌ Produto não encontrado.' });
+          const p = r.rows[0];
+          const charge = await createRevantPixOrder({
+            discordUserId: interaction.user.id,
+            customerName: interaction.user.globalName || interaction.user.username,
+            amount: Number(p.price),
+            days: OFFER_DAYS,
+            productId: p.id,
+            productName: p.name
+          });
+          const pix = charge.pix || {};
+          const embed = new EmbedBuilder()
+            .setTitle('💳 Pagamento PIX')
+            .setDescription(`**Produto:** ${p.name}\n**Valor:** R$ ${Number(p.price).toFixed(2)}\n\n**Copia e cola:**\n\`\`\`${pix.qr_code || 'QR Code não retornado'}\`\`\`\n\nApós a confirmação, sua licença será enviada por DM.`)
+            .setColor(0x2ECC71);
+          return interaction.editReply({ embeds: [embed] });
+        } catch (error) {
+          console.error('[Discord] Erro no /comprar:', error);
+          return interaction.editReply({ content: `❌ Não foi possível criar o PIX. ${error?.message || 'Tente novamente.'}` });
+        }
       }
     }
 
