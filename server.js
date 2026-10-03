@@ -563,10 +563,37 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'config-verificacao') {
         if (!isDiscordAdmin(interaction)) return interaction.reply({ content: 'Sem permissão.', ephemeral: true });
-        const embed = new EmbedBuilder().setTitle('🔐 Verificação').setDescription('Clique no botão abaixo para receber acesso.').setColor(0x5865F2);
-        const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('verify').setLabel('Verificar').setEmoji('🔐').setStyle(ButtonStyle.Primary));
-        await interaction.channel.send({ embeds: [embed], components: [row] });
-        return interaction.reply({ content: 'Painel publicado.', ephemeral: true });
+        const rulesEmbed = new EmbedBuilder()
+          .setTitle('📜 REGRAS DO JAGUAR')
+          .setDescription(
+            [
+              '**1. Respeito**\nTrate todos os membros e a equipe com respeito. Ofensas, discriminação e provocações não serão toleradas.',
+              '**2. Sem spam**\nNão envie spam, floods, links suspeitos ou mensagens repetitivas.',
+              '**3. Sem divulgação indevida**\nNão divulgue outros servidores, produtos ou comunidades sem autorização da equipe.',
+              '**4. Compras e licenças**\nNão compartilhe ou revenda sua licença. Em caso de problema, procure a equipe.',
+              '**5. Segurança**\nNunca compartilhe senhas, tokens ou outras informações confidenciais.',
+              '**6. Equipe**\nA equipe pode remover mensagens, aplicar punições e tomar decisões para manter o servidor organizado.',
+              '**7. Ao verificar**\nAo clicar em **Aceitar as regras**, você confirma que leu e concorda com estas regras.'
+            ].join('\n\n')
+          )
+          .setColor(0x5865F2)
+          .setFooter({ text: 'JAGUAR • Leia as regras antes de verificar' });
+
+        const verifyEmbed = new EmbedBuilder()
+          .setTitle('🔐 VERIFICAÇÃO')
+          .setDescription('Depois de ler as regras acima, clique no botão abaixo para **aceitar as regras e receber acesso ao servidor**.')
+          .setColor(0x00D26A);
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('accept_rules')
+            .setLabel('Aceitar as regras')
+            .setEmoji('✅')
+            .setStyle(ButtonStyle.Success)
+        );
+
+        await interaction.channel.send({ embeds: [rulesEmbed, verifyEmbed], components: [row] });
+        return interaction.reply({ content: '✅ Post de regras + verificação publicado.', ephemeral: true });
       }
 
       if (interaction.commandName === 'produto-criar') {
@@ -692,7 +719,10 @@ client.on(Events.InteractionCreate, async interaction => {
           .setDescription(`**${s.product_name}**\nValor: **${brl(s.new_price)}**\n\nPague o PIX abaixo. Após a confirmação, sua licença será enviada automaticamente no Discord.`)
           .setColor(0x00D26A);
         const pix = charge.pix?.qr_code || '';
-        if (charge.pix?.qr_code_url) embed.addFields({ name: '🔗 Abrir cobrança', value: charge.pix.qr_code_url });
+        const qrUrl = charge.pix?.qr_code_url || '';
+        if (qrUrl && qrUrl.length <= 1024 && /^https?:\/\//i.test(qrUrl)) {
+          embed.addFields({ name: '🔗 Abrir cobrança', value: qrUrl });
+        }
         if (pix) embed.addFields({ name: '📋 PIX copia e cola', value: `\`${pix.slice(0, 1000)}\`` });
         return interaction.editReply({ embeds: [embed] });
       } catch (error) {
@@ -701,11 +731,15 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    if (interaction.isButton() && interaction.customId === 'verify') {
+    if (interaction.isButton() && (interaction.customId === 'verify' || interaction.customId === 'accept_rules')) {
       const roleId = process.env.VERIFIED_ROLE_ID || process.env.DISCORD_ROLE_ID;
+      if (!roleId) return interaction.reply({ content: '❌ Cargo de verificação não configurado.', ephemeral: true });
       const member = await interaction.guild.members.fetch(interaction.user.id);
+      if (member.roles.cache.has(roleId)) {
+        return interaction.reply({ content: '✅ Você já está verificado.', ephemeral: true });
+      }
       await member.roles.add(roleId);
-      return interaction.reply({ content: '✅ Você foi verificado.', ephemeral: true });
+      return interaction.reply({ content: '✅ Regras aceitas! Você foi verificado e recebeu acesso ao servidor.', ephemeral: true });
     }
   } catch (error) {
     console.error('[Discord]', error);
