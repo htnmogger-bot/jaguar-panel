@@ -1,16 +1,18 @@
-# JAGUAR Panel + Discord (unificado)
+# JAGUAR PANEL + BOT
 
-Um único Web Service Node.js com:
-- painel administrativo de licenças;
-- bot Discord do projeto original;
-- criação de PIX pela Revant Pay;
-- webhook Revant Pay com idempotência;
-- geração de licença no mesmo PostgreSQL usado pela API JAGUAR;
-- DM da licença e cargo no Discord após pagamento aprovado.
+Painel administrativo, bot Discord e integração de pagamentos Revant Pay no mesmo serviço.
 
-## Deploy no Render
-Build: `npm install`
-Start: `npm start`
+## Post de venda
+Administradores podem usar `/post-venda` no canal desejado para publicar um anúncio com:
+- produto;
+- título e descrição;
+- preço antigo;
+- preço promocional;
+- desconto percentual calculado automaticamente;
+- até duas imagens por URL HTTPS;
+- botão de compra.
+
+O botão cria o PIX diretamente para o usuário e vincula a cobrança ao Discord.
 
 ## Variáveis
-Consulte `.env.example`. Segredos ficam somente nas Environment Variables do Render.
+DATABASE_URL, PANEL_PASSWORD, SESSION_SECRET, BOT_API_SECRET, REVANTPAY_API_KEY, DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID, DISCORD_GUILD_ID, DISCORD_ROLE_ID e PUBLIC_BASE_URL.

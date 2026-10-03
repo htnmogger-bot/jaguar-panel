@@ -36,6 +36,19 @@ const OFFER_DAYS = Number(process.env.JAGUAR_DAYS || 7);
 const OFFER_NAME = process.env.JAGUAR_PRODUCT_NAME || `JAGUAR CLIENT - ${OFFER_DAYS} DIAS`;
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
 
+function validHttpsUrl(value) {
+  try {
+    const u = new URL(String(value || ''));
+    return u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function brl(value) {
+  return Number(value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
 function safeEq(a, b) {
   const aa = Buffer.from(String(a ?? ''));
   const bb = Buffer.from(String(b ?? ''));
@@ -139,6 +152,22 @@ async function ensureSchema() {
       raw JSONB NOT NULL,
       received_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(charge_id, event)
+    );
+
+    CREATE TABLE IF NOT EXISTS sale_posts (
+      id BIGSERIAL PRIMARY KEY,
+      product_id BIGINT NOT NULL,
+      channel_id TEXT NOT NULL,
+      message_id TEXT,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      old_price NUMERIC(12,2) NOT NULL,
+      new_price NUMERIC(12,2) NOT NULL,
+      discount_percent INTEGER NOT NULL DEFAULT 0,
+      image_url TEXT,
+      image2_url TEXT,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
     );
   `);
 
@@ -483,16 +512,35 @@ const client = new Client({
 });
 
 const commands = [
-  new SlashCommandBuilder().setName('config-verificacao').setDescription('Publica o painel de verificação.').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-  new SlashCommandBuilder().setName('produtos').setDescription('Lista os produtos ativos.'),
   new SlashCommandBuilder()
-    .setName('produto-criar').setDescription('Cria um produto.')
+    .setName('config-verificacao')
+    .setDescription('Publica o painel de verificação.')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder()
+    .setName('produtos')
+    .setDescription('Lista os produtos ativos.'),
+  new SlashCommandBuilder()
+    .setName('produto-criar')
+    .setDescription('Cria um produto.')
     .addStringOption(o => o.setName('nome').setDescription('Nome').setRequired(true))
     .addNumberOption(o => o.setName('preco').setDescription('Preço em reais').setRequired(true))
     .addStringOption(o => o.setName('descricao').setDescription('Descrição').setRequired(true))
     .addStringOption(o => o.setName('download').setDescription('Link de download'))
     .addStringOption(o => o.setName('tutorial').setDescription('Link do tutorial')),
-  new SlashCommandBuilder().setName('comprar').setDescription('Gera um PIX para comprar o JAGUAR.').addIntegerOption(o => o.setName('produto').setDescription('ID do produto').setRequired(true))
+  new SlashCommandBuilder()
+    .setName('post-venda')
+    .setDescription('Publica um post de venda com desconto e botão de compra.')
+    .addIntegerOption(o => o.setName('produto').setDescription('ID do produto').setRequired(true))
+    .addStringOption(o => o.setName('titulo').setDescription('Título do anúncio').setRequired(true))
+    .addStringOption(o => o.setName('descricao').setDescription('Texto do anúncio').setRequired(true))
+    .addNumberOption(o => o.setName('preco_antigo').setDescription('Preço antigo').setRequired(true))
+    .addNumberOption(o => o.setName('preco_novo').setDescription('Preço promocional').setRequired(true))
+    .addStringOption(o => o.setName('imagem').setDescription('URL HTTPS da imagem principal'))
+    .addStringOption(o => o.setName('imagem2').setDescription('URL HTTPS de uma segunda imagem')),
+  new SlashCommandBuilder()
+    .setName('comprar')
+    .setDescription('Gera um PIX para comprar um produto.')
+    .addIntegerOption(o => o.setName('produto').setDescription('ID do produto').setRequired(true))
 ].map(c => c.toJSON());
 
 function isDiscordAdmin(interaction) {
@@ -532,6 +580,61 @@ client.on(Events.InteractionCreate, async interaction => {
         return interaction.reply(`✅ Produto criado com ID **${r.rows[0].id}**.`);
       }
 
+      if (interaction.commandName === 'post-venda') {
+        if (!isDiscordAdmin(interaction)) return interaction.reply({ content: 'Sem permissão.', ephemeral: true });
+
+        const productId = interaction.options.getInteger('produto');
+        const title = interaction.options.getString('titulo');
+        const description = interaction.options.getString('descricao');
+        const oldPrice = Number(interaction.options.getNumber('preco_antigo'));
+        const newPrice = Number(interaction.options.getNumber('preco_novo'));
+        const imageUrl = interaction.options.getString('imagem') || '';
+        const image2Url = interaction.options.getString('imagem2') || '';
+
+        if (!(oldPrice >= 0.01 && newPrice >= 5)) {
+          return interaction.reply({ content: '❌ O preço antigo deve ser maior que R$ 0,01 e o preço novo deve ser de pelo menos R$ 5,00.', ephemeral: true });
+        }
+        if (newPrice >= oldPrice) {
+          return interaction.reply({ content: '❌ O preço novo precisa ser menor que o preço antigo para existir desconto.', ephemeral: true });
+        }
+        if (imageUrl && !validHttpsUrl(imageUrl)) return interaction.reply({ content: '❌ A imagem principal precisa ser uma URL HTTPS válida.', ephemeral: true });
+        if (image2Url && !validHttpsUrl(image2Url)) return interaction.reply({ content: '❌ A segunda imagem precisa ser uma URL HTTPS válida.', ephemeral: true });
+
+        const product = await pool.query('SELECT * FROM products WHERE id=$1 AND active=TRUE LIMIT 1', [productId]);
+        if (!product.rowCount) return interaction.reply({ content: '❌ Produto não encontrado.', ephemeral: true });
+
+        const discount = Math.round(((oldPrice - newPrice) / oldPrice) * 100);
+        const savings = oldPrice - newPrice;
+        const r = await pool.query(`
+          INSERT INTO sale_posts(product_id,channel_id,title,description,old_price,new_price,discount_percent,image_url,image2_url)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+          RETURNING id
+        `, [productId, interaction.channelId, title, description, oldPrice, newPrice, discount, imageUrl || null, image2Url || null]);
+        const saleId = r.rows[0].id;
+
+        const embed = new EmbedBuilder()
+          .setTitle(title)
+          .setDescription(`${description}\n\n~~${brl(oldPrice)}~~  →  **${brl(newPrice)}**\n\n🔥 **${discount}% OFF** • Você economiza **${brl(savings)}**`)
+          .setColor(0x00D26A)
+          .setFooter({ text: `JAGUAR • Oferta #${saleId}` });
+        if (imageUrl) embed.setImage(imageUrl);
+
+        const embeds = [embed];
+        if (image2Url) embeds.push(new EmbedBuilder().setImage(image2Url).setColor(0x00D26A));
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`sale_buy:${saleId}`)
+            .setLabel(`COMPRAR POR ${brl(newPrice)}`)
+            .setEmoji('🛒')
+            .setStyle(ButtonStyle.Success)
+        );
+
+        const message = await interaction.channel.send({ embeds, components: [row] });
+        await pool.query('UPDATE sale_posts SET message_id=$2 WHERE id=$1', [saleId, message.id]);
+        return interaction.reply({ content: `✅ Post de venda publicado. Oferta #${saleId}.`, ephemeral: true });
+      }
+
       if (interaction.commandName === 'produtos') {
         const r = await pool.query('SELECT id,name,price,description FROM products WHERE active=TRUE ORDER BY id DESC');
         if (!r.rowCount) return interaction.reply('Nenhum produto cadastrado.');
@@ -539,30 +642,62 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       if (interaction.commandName === 'comprar') {
+        const productId = interaction.options.getInteger('produto');
+        const r = await pool.query('SELECT * FROM products WHERE id=$1 AND active=TRUE LIMIT 1', [productId]);
+        if (!r.rowCount) return interaction.reply({ content: 'Produto não encontrado.', ephemeral: true });
+        const p = r.rows[0];
         await interaction.deferReply({ ephemeral: true });
-        try {
-          const productId = interaction.options.getInteger('produto');
-          const r = await pool.query('SELECT * FROM products WHERE id=$1 AND active=TRUE LIMIT 1', [productId]);
-          if (!r.rowCount) return interaction.editReply({ content: '❌ Produto não encontrado.' });
-          const p = r.rows[0];
-          const charge = await createRevantPixOrder({
-            discordUserId: interaction.user.id,
-            customerName: interaction.user.globalName || interaction.user.username,
-            amount: Number(p.price),
-            days: OFFER_DAYS,
-            productId: p.id,
-            productName: p.name
-          });
-          const pix = charge.pix || {};
-          const embed = new EmbedBuilder()
-            .setTitle('💳 Pagamento PIX')
-            .setDescription(`**Produto:** ${p.name}\n**Valor:** R$ ${Number(p.price).toFixed(2)}\n\n**Copia e cola:**\n\`\`\`${pix.qr_code || 'QR Code não retornado'}\`\`\`\n\nApós a confirmação, sua licença será enviada por DM.`)
-            .setColor(0x2ECC71);
-          return interaction.editReply({ embeds: [embed] });
-        } catch (error) {
-          console.error('[Discord] Erro no /comprar:', error);
-          return interaction.editReply({ content: `❌ Não foi possível criar o PIX. ${error?.message || 'Tente novamente.'}` });
-        }
+        const charge = await createRevantPixOrder({
+          discordUserId: interaction.user.id,
+          customerName: interaction.user.globalName || interaction.user.username,
+          amount: Number(p.price),
+          days: OFFER_DAYS,
+          productId: p.id,
+          productName: p.name
+        });
+        const pix = charge.pix || {};
+        const embed = new EmbedBuilder()
+          .setTitle('💳 Pagamento PIX')
+          .setDescription(`**Produto:** ${p.name}\n**Valor:** R$ ${Number(p.price).toFixed(2)}\n\n**Copia e cola:**\n\`\`\`${pix.qr_code || 'QR Code não retornado'}\`\`\`\n\nApós a confirmação, sua licença será enviada por DM.`)
+          .setColor(0x2ECC71);
+        return interaction.editReply({ embeds: [embed] });
+      }
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('sale_buy:')) {
+      await interaction.deferReply({ ephemeral: true });
+      const saleId = interaction.customId.split(':')[1];
+      const sale = await pool.query(`
+        SELECT s.*, p.name AS product_name, p.active AS product_active
+        FROM sale_posts s
+        JOIN products p ON p.id=s.product_id
+        WHERE s.id=$1 AND s.active=TRUE
+        LIMIT 1
+      `, [saleId]);
+      if (!sale.rowCount || !sale.rows[0].product_active) {
+        return interaction.editReply({ content: '❌ Esta oferta não está mais disponível.' });
+      }
+      const s = sale.rows[0];
+      try {
+        const charge = await createRevantPixOrder({
+          discordUserId: interaction.user.id,
+          customerName: interaction.user.globalName || interaction.user.username,
+          amount: Number(s.new_price),
+          days: OFFER_DAYS,
+          productId: s.product_id,
+          productName: s.product_name
+        });
+        const embed = new EmbedBuilder()
+          .setTitle('💳 PIX — JAGUAR CLIENT')
+          .setDescription(`**${s.product_name}**\nValor: **${brl(s.new_price)}**\n\nPague o PIX abaixo. Após a confirmação, sua licença será enviada automaticamente no Discord.`)
+          .setColor(0x00D26A);
+        const pix = charge.pix?.qr_code || '';
+        if (charge.pix?.qr_code_url) embed.addFields({ name: '🔗 Abrir cobrança', value: charge.pix.qr_code_url });
+        if (pix) embed.addFields({ name: '📋 PIX copia e cola', value: `\`${pix.slice(0, 1000)}\`` });
+        return interaction.editReply({ embeds: [embed] });
+      } catch (error) {
+        console.error('[Discord] Erro no botão de compra:', error);
+        return interaction.editReply({ content: `❌ Não foi possível criar o PIX. ${error?.message || 'Tente novamente.'}` });
       }
     }
 
